@@ -172,6 +172,63 @@ function Pill({ children, color, bg }) {
   );
 }
 
+// Voice dictation button — sits inside a text field, appends spoken text.
+// Renders nothing if the browser doesn't support speech recognition
+// (works well on Chrome/Android; support on Safari/iOS varies).
+function MicButton({ onResult }) {
+  const [listening, setListening] = useState(false);
+  const recRef = useRef(null);
+  const SpeechRec = typeof window !== "undefined" && (window.SpeechRecognition || window.webkitSpeechRecognition);
+  if (!SpeechRec) return null;
+
+  const start = () => {
+    const rec = new SpeechRec();
+    rec.lang = "en-US";
+    rec.interimResults = false;
+    rec.maxAlternatives = 1;
+    rec.onresult = (e) => onResult(e.results[0][0].transcript.trim());
+    rec.onend = () => setListening(false);
+    rec.onerror = () => setListening(false);
+    recRef.current = rec;
+    setListening(true);
+    rec.start();
+  };
+  const stop = () => { recRef.current && recRef.current.stop(); setListening(false); };
+
+  return (
+    <button
+      type="button"
+      onClick={listening ? stop : start}
+      title={listening ? "Stop dictating" : "Dictate"}
+      style={{
+        position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)",
+        background: listening ? "#B5432E" : "#EAF1EF", color: listening ? "#fff" : "#2F6F63",
+        border: "none", borderRadius: 7, width: 25, height: 25, fontSize: 12.5,
+        cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0,
+      }}
+    >
+      {listening ? "●" : "🎤"}
+    </button>
+  );
+}
+
+// Wrapper: a text field (input or textarea) with a mic button inside it.
+function VoiceField({ as = "input", value, onChange, wrapperStyle, ...rest }) {
+  const Tag = as;
+  const appendText = (t) => onChange((value ? value + " " : "") + t);
+  return (
+    <div style={{ position: "relative", ...wrapperStyle }}>
+      <Tag
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        {...rest}
+        style={{ ...rest.style, paddingRight: 36 }}
+      />
+      <MicButton onResult={appendText} />
+    </div>
+  );
+}
+
 function Disclaimer({ text, onAck }) {
   return (
     <div
@@ -327,13 +384,12 @@ function RegionPanel({ regionId, existing, onClose, onCreateNew, onAddInstance }
         {mode === "new" && (
           <div>
             <label style={fieldLabel}>What happened?</label>
-            <input value={cause} onChange={(e) => setCause(e.target.value)} placeholder="e.g. Rolled it during a run"
-              style={inputStyle} />
+            <VoiceField value={cause} onChange={setCause} placeholder="e.g. Rolled it during a run" style={inputStyle} />
             <label style={fieldLabel}>Date</label>
             <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={inputStyle} />
             <PainSlider pain={pain} setPain={setPain} />
             <label style={fieldLabel}>Notes (optional)</label>
-            <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} style={{ ...inputStyle, resize: "none" }} />
+            <VoiceField as="textarea" value={notes} onChange={setNotes} rows={2} style={{ ...inputStyle, resize: "none" }} />
             <button onClick={submitNew} disabled={!cause.trim()} style={primaryBtn(!cause.trim())}>
               Save injury
             </button>
@@ -347,7 +403,7 @@ function RegionPanel({ regionId, existing, onClose, onCreateNew, onAddInstance }
             <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={inputStyle} />
             <PainSlider pain={pain} setPain={setPain} />
             <label style={fieldLabel}>Notes (optional)</label>
-            <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} style={{ ...inputStyle, resize: "none" }} />
+            <VoiceField as="textarea" value={notes} onChange={setNotes} rows={2} style={{ ...inputStyle, resize: "none" }} />
             <button onClick={submitInstance} style={primaryBtn(false)}>Save instance</button>
           </div>
         )}
@@ -587,12 +643,12 @@ function InjuryDetail({ injury, onClose, onUpdate, onDelete, onDeleteInstance, f
             </div>
             {exercises.map((ex) => (
               <div key={ex.id} style={{ background: "#fff", border: "1px solid #E3EAE8", borderRadius: 10, padding: "10px 12px", marginBottom: 8 }}>
-                <input placeholder="Exercise name" value={ex.name} onChange={(e) => updateExerciseRow(ex.id, { name: e.target.value })} style={{ ...inputStyle, marginBottom: 6 }} />
+                <VoiceField value={ex.name} onChange={(v) => updateExerciseRow(ex.id, { name: v })} placeholder="Exercise name" style={{ ...inputStyle, marginBottom: 6 }} />
                 <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
-                  <input placeholder="Sets/reps" value={ex.sets} onChange={(e) => updateExerciseRow(ex.id, { sets: e.target.value })} style={{ ...inputStyle, flex: 1 }} />
-                  <input placeholder="Frequency" value={ex.freq} onChange={(e) => updateExerciseRow(ex.id, { freq: e.target.value })} style={{ ...inputStyle, flex: 1 }} />
+                  <VoiceField value={ex.sets} onChange={(v) => updateExerciseRow(ex.id, { sets: v })} placeholder="Sets/reps" style={inputStyle} wrapperStyle={{ flex: 1 }} />
+                  <VoiceField value={ex.freq} onChange={(v) => updateExerciseRow(ex.id, { freq: v })} placeholder="Frequency" style={inputStyle} wrapperStyle={{ flex: 1 }} />
                 </div>
-                <input placeholder="Restrictions (optional)" value={ex.restrictions} onChange={(e) => updateExerciseRow(ex.id, { restrictions: e.target.value })} style={inputStyle} />
+                <VoiceField value={ex.restrictions} onChange={(v) => updateExerciseRow(ex.id, { restrictions: v })} placeholder="Restrictions (optional)" style={inputStyle} />
                 <button onClick={() => removeExerciseRow(ex.id)} style={{ background: "none", border: "none", color: "#B5432E", fontSize: 12, marginTop: 6, cursor: "pointer", padding: 0 }}>Remove</button>
               </div>
             ))}
@@ -600,7 +656,7 @@ function InjuryDetail({ injury, onClose, onUpdate, onDelete, onDeleteInstance, f
               + Add exercise
             </button>
             <label style={fieldLabel}>Other notes from your doctor</label>
-            <textarea value={rehabNotes} onChange={(e) => setRehabNotes(e.target.value)} rows={2} style={{ ...inputStyle, resize: "none" }} />
+            <VoiceField as="textarea" value={rehabNotes} onChange={setRehabNotes} rows={2} style={{ ...inputStyle, resize: "none" }} />
             <button onClick={saveRehab} style={primaryBtn(false)}>Save rehab plan</button>
           </div>
         )}
