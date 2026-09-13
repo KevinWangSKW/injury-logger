@@ -1,0 +1,866 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+<title>Bodylog</title>
+<meta name="description" content="Personal injury and pain tracker" />
+<link rel="manifest" href="./manifest.json" />
+<link rel="icon" href="./icon-192.png" />
+<link rel="apple-touch-icon" href="./icon-192.png" />
+<meta name="theme-color" content="#2F6F63" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<meta name="apple-mobile-web-app-title" content="Bodylog" />
+<style>
+  html, body { margin: 0; padding: 0; background: #EFF3F2; }
+  * { -webkit-tap-highlight-color: transparent; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+/* ---------------------------------------------------------
+   Bodylog — personal injury & pain tracker (MVP)
+   Standalone build: uses browser localStorage instead of
+   the Claude-artifact window.storage API, so it runs anywhere.
+   --------------------------------------------------------- */
+const { useState, useEffect, useRef } = React;
+
+const REGIONS = [
+  { id: "head", label: "Head" },
+  { id: "neck", label: "Neck" },
+  { id: "chest", label: "Chest" },
+  { id: "upper_back", label: "Upper back" },
+  { id: "abdomen", label: "Abdomen" },
+  { id: "lower_back", label: "Lower back" },
+  { id: "left_shoulder", label: "Left shoulder" },
+  { id: "right_shoulder", label: "Right shoulder" },
+  { id: "left_upper_arm", label: "Left upper arm" },
+  { id: "right_upper_arm", label: "Right upper arm" },
+  { id: "left_elbow", label: "Left elbow" },
+  { id: "right_elbow", label: "Right elbow" },
+  { id: "left_forearm", label: "Left forearm" },
+  { id: "right_forearm", label: "Right forearm" },
+  { id: "left_wrist_hand", label: "Left wrist / hand" },
+  { id: "right_wrist_hand", label: "Right wrist / hand" },
+  { id: "left_hip", label: "Left hip" },
+  { id: "right_hip", label: "Right hip" },
+  { id: "left_thigh", label: "Left thigh" },
+  { id: "right_thigh", label: "Right thigh" },
+  { id: "left_knee", label: "Left knee" },
+  { id: "right_knee", label: "Right knee" },
+  { id: "left_lower_leg", label: "Left shin / calf" },
+  { id: "right_lower_leg", label: "Right shin / calf" },
+  { id: "left_ankle_foot", label: "Left ankle / foot" },
+  { id: "right_ankle_foot", label: "Right ankle / foot" },
+];
+const REGION_LABEL = Object.fromEntries(REGIONS.map((r) => [r.id, r.label]));
+
+// x/y positions on a shared 300x620 canvas, per view
+const FRONT_POS = {
+  head: [150, 38], neck: [150, 66], chest: [150, 118],
+  abdomen: [150, 178],
+  left_shoulder: [104, 92], right_shoulder: [196, 92],
+  left_upper_arm: [84, 148], right_upper_arm: [216, 148],
+  left_elbow: [78, 206], right_elbow: [222, 206],
+  left_forearm: [73, 258], right_forearm: [227, 258],
+  left_wrist_hand: [69, 308], right_wrist_hand: [231, 308],
+  left_hip: [124, 228], right_hip: [176, 228],
+  left_thigh: [130, 300], right_thigh: [170, 300],
+  left_knee: [129, 380], right_knee: [171, 380],
+  left_lower_leg: [129, 448], right_lower_leg: [171, 448],
+  left_ankle_foot: [129, 520], right_ankle_foot: [171, 520],
+};
+const BACK_POS = { ...FRONT_POS, upper_back: [150, 118], lower_back: [150, 178] };
+delete BACK_POS.chest;
+delete BACK_POS.abdomen;
+
+const FRONT_REGIONS = REGIONS.filter((r) => FRONT_POS[r.id]).map((r) => r.id);
+const BACK_REGIONS = REGIONS.filter((r) => BACK_POS[r.id]).map((r) => r.id);
+
+// curated, static reference lists — general education only, not a diagnosis
+const REF_GROUPS = {
+  head: ["Contusion (bruise)", "Concussion — seek care", "Tension headache"],
+  neck: ["Muscle strain", "Whiplash", "Stiff neck / crick"],
+  chest: ["Intercostal muscle strain", "Rib contusion"],
+  back: ["Muscle strain", "Disc strain", "Sciatica", "Facet joint irritation"],
+  abdomen: ["Abdominal muscle strain"],
+  shoulder: ["Rotator cuff strain", "Shoulder impingement", "AC joint sprain", "Frozen shoulder", "Dislocation"],
+  arm: ["Muscle strain", "Contusion"],
+  elbow: ["Tennis elbow (lateral epicondylitis)", "Golfer's elbow (medial epicondylitis)", "Bursitis", "Sprain"],
+  wrist_hand: ["Sprain", "Fracture", "Tendinitis", "Carpal tunnel irritation"],
+  hip: ["Hip flexor strain", "Bursitis", "Labral irritation", "Groin strain"],
+  thigh: ["Hamstring strain", "Quadriceps strain", "Contusion"],
+  knee: ["ACL sprain/tear", "MCL/LCL sprain", "Meniscus tear", "Patellar tendinitis", "Patellofemoral pain", "Bursitis"],
+  lower_leg: ["Shin splints", "Calf strain", "Stress fracture"],
+  ankle_foot: ["Ankle sprain", "Achilles tendinitis", "Plantar fasciitis", "Stress fracture"],
+};
+const REGION_GROUP = {
+  head: "head", neck: "neck", chest: "chest", upper_back: "back", lower_back: "back", abdomen: "abdomen",
+  left_shoulder: "shoulder", right_shoulder: "shoulder",
+  left_upper_arm: "arm", right_upper_arm: "arm",
+  left_elbow: "elbow", right_elbow: "elbow",
+  left_forearm: "arm", right_forearm: "arm",
+  left_wrist_hand: "wrist_hand", right_wrist_hand: "wrist_hand",
+  left_hip: "hip", right_hip: "hip",
+  left_thigh: "thigh", right_thigh: "thigh",
+  left_knee: "knee", right_knee: "knee",
+  left_lower_leg: "lower_leg", right_lower_leg: "lower_leg",
+  left_ankle_foot: "ankle_foot", right_ankle_foot: "ankle_foot",
+};
+
+const STATUS_META = {
+  active: { label: "Active", color: "#B5432E", bg: "#F4E1DC" },
+  recovering: { label: "Recovering", color: "#B87F1E", bg: "#F4E9D4" },
+  resolved: { label: "Resolved", color: "#4C6B65", bg: "#DCE7E4" },
+  recurring: { label: "Recurring", color: "#7A5091", bg: "#E7DEEC" },
+};
+
+const PAIN_COLOR = (p) => (p <= 3 ? "#5F8F6E" : p <= 6 ? "#C98A2E" : "#B5432E");
+
+const uid = () => Math.random().toString(36).slice(2, 10);
+const todayStr = () => new Date().toISOString().slice(0, 10);
+const fmtDate = (d) =>
+  new Date(d + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+
+/* ---------------------------------------------------------
+   Storage helpers — plain browser localStorage, fully offline,
+   fully on-device. Nothing leaves the phone/computer.
+   --------------------------------------------------------- */
+function loadJSON(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+function saveJSON(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    /* best effort — e.g. storage full or unavailable */
+  }
+}
+async function loadInjuries() { return loadJSON("bodylog-injuries", []); }
+async function saveInjuries(list) { saveJSON("bodylog-injuries", list); }
+async function loadFlags() { return loadJSON("bodylog-flags", {}); }
+async function saveFlags(flags) { saveJSON("bodylog-flags", flags); }
+async function loadDone() { return loadJSON("bodylog-reminders-done", {}); }
+async function saveDone(done) { saveJSON("bodylog-reminders-done", done); }
+
+/* ---------------------------------------------------------
+   Small UI primitives
+   --------------------------------------------------------- */
+function Pill({ children, color, bg }) {
+  return (
+    <span
+      style={{
+        color, backgroundColor: bg, fontSize: 12.5, fontWeight: 600,
+        padding: "3px 10px", borderRadius: 20, letterSpacing: 0.1,
+        display: "inline-block", lineHeight: 1.4,
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
+function Disclaimer({ text, onAck }) {
+  return (
+    <div
+      style={{
+        position: "fixed", inset: 0, background: "rgba(23,33,31,0.5)",
+        display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 60,
+      }}
+    >
+      <div
+        style={{
+          background: "#FFFFFF", borderRadius: "18px 18px 0 0", padding: "24px 22px 22px",
+          maxWidth: 430, width: "100%", boxShadow: "0 -8px 30px rgba(0,0,0,0.15)",
+        }}
+      >
+        <div style={{ fontSize: 15, fontWeight: 700, color: "#1B2B29", marginBottom: 8 }}>
+          Before you continue
+        </div>
+        <p style={{ fontSize: 14, color: "#3E4F4B", lineHeight: 1.55, marginBottom: 18 }}>{text}</p>
+        <button
+          onClick={onAck}
+          style={{
+            width: "100%", background: "#2F6F63", color: "#fff", border: "none",
+            borderRadius: 10, padding: "12px 0", fontSize: 14.5, fontWeight: 600, cursor: "pointer",
+          }}
+        >
+          I understand
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   Body diagram
+   --------------------------------------------------------- */
+function BodySilhouette({ view, injuriesByRegion, onPick }) {
+  const regionIds = view === "front" ? FRONT_REGIONS : BACK_REGIONS;
+  const posMap = view === "front" ? FRONT_POS : BACK_POS;
+
+  return (
+    <svg viewBox="0 0 300 620" width="100%" style={{ maxWidth: 300, display: "block", margin: "0 auto" }}>
+      {/* stylized silhouette */}
+      <g fill="#DCEAE6" stroke="#9FBDB6" strokeWidth="1.5">
+        <circle cx="150" cy="42" r="26" />
+        <rect x="138" y="64" width="24" height="18" rx="6" />
+        <path d="M95,88 Q150,70 205,88 L214,190 Q150,208 86,190 Z" />
+        <rect x="70" y="112" width="30" height="90" rx="14" transform="rotate(4 85 157)" />
+        <rect x="200" y="112" width="30" height="90" rx="14" transform="rotate(-4 215 157)" />
+        <rect x="60" y="196" width="26" height="90" rx="13" transform="rotate(4 73 241)" />
+        <rect x="214" y="196" width="26" height="90" rx="13" transform="rotate(-4 227 241)" />
+        <circle cx="69" cy="308" r="15" />
+        <circle cx="231" cy="308" r="15" />
+        <path d="M112,196 L188,196 L182,300 L118,300 Z" />
+        <rect x="112" y="296" width="34" height="150" rx="17" />
+        <rect x="154" y="296" width="34" height="150" rx="17" />
+        <rect x="115" y="440" width="28" height="130" rx="14" />
+        <rect x="157" y="440" width="28" height="130" rx="14" />
+        <ellipse cx="129" cy="524" rx="20" ry="14" />
+        <ellipse cx="171" cy="524" rx="20" ry="14" />
+      </g>
+
+      {regionIds.map((id) => {
+        const [x, y] = posMap[id];
+        const injury = injuriesByRegion[id];
+        const fill = injury ? STATUS_META[injury.status].color : "#2F6F63";
+        return (
+          <g key={id} onClick={() => onPick(id)} style={{ cursor: "pointer" }}>
+            <circle cx={x} cy={y} r={injury ? 11 : 9} fill={fill} opacity={injury ? 0.92 : 0.55} stroke="#fff" strokeWidth="1.5" />
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+/* ---------------------------------------------------------
+   Region panel — log a new issue, or add an instance to an existing one
+   --------------------------------------------------------- */
+function RegionPanel({ regionId, existing, onClose, onCreateNew, onAddInstance }) {
+  const [mode, setMode] = useState(existing.length ? "choose" : "new");
+  const [targetId, setTargetId] = useState(null);
+  const [cause, setCause] = useState("");
+  const [pain, setPain] = useState(4);
+  const [date, setDate] = useState(todayStr());
+  const [notes, setNotes] = useState("");
+
+  const submitNew = () => {
+    onCreateNew({ regionId, cause, pain, date, notes });
+    onClose();
+  };
+  const submitInstance = () => {
+    onAddInstance(targetId, { pain, date, notes });
+    onClose();
+  };
+
+  return (
+    <div
+      style={{
+        position: "fixed", inset: 0, background: "rgba(23,33,31,0.5)",
+        display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 50,
+      }}
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: "#FBFCFB", borderRadius: "18px 18px 0 0", padding: "22px 20px 26px",
+          maxWidth: 430, width: "100%", maxHeight: "82vh", overflowY: "auto",
+          boxShadow: "0 -8px 30px rgba(0,0,0,0.18)",
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+          <div style={{ fontSize: 16.5, fontWeight: 700, color: "#1B2B29" }}>{REGION_LABEL[regionId]}</div>
+          <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 20, color: "#7A8B87", cursor: "pointer", lineHeight: 1 }}>×</button>
+        </div>
+
+        {mode === "choose" && (
+          <div>
+            <div style={{ fontSize: 13.5, color: "#4B5F5C", marginBottom: 10 }}>
+              You already have injuries logged here. Add a new instance to one, or start a new record.
+            </div>
+            {existing.map((inj) => (
+              <button
+                key={inj.id}
+                onClick={() => { setTargetId(inj.id); setMode("instance"); }}
+                style={{
+                  display: "block", width: "100%", textAlign: "left", background: "#fff",
+                  border: "1px solid #DCE6E3", borderRadius: 10, padding: "10px 12px", marginBottom: 8, cursor: "pointer",
+                }}
+              >
+                <span style={{ fontSize: 14, fontWeight: 600, color: "#1B2B29" }}>
+                  {inj.cause || "Injury"}
+                </span>
+                <span style={{ float: "right" }}>
+                  <Pill color={STATUS_META[inj.status].color} bg={STATUS_META[inj.status].bg}>
+                    {STATUS_META[inj.status].label}
+                  </Pill>
+                </span>
+              </button>
+            ))}
+            <button
+              onClick={() => setMode("new")}
+              style={{
+                width: "100%", background: "none", border: "1px dashed #9FBDB6", borderRadius: 10,
+                padding: "10px 0", fontSize: 13.5, color: "#2F6F63", fontWeight: 600, cursor: "pointer", marginTop: 4,
+              }}
+            >
+              + Log a new, separate injury here
+            </button>
+          </div>
+        )}
+
+        {mode === "new" && (
+          <div>
+            <label style={fieldLabel}>What happened?</label>
+            <input value={cause} onChange={(e) => setCause(e.target.value)} placeholder="e.g. Rolled it during a run"
+              style={inputStyle} />
+            <label style={fieldLabel}>Date</label>
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={inputStyle} />
+            <PainSlider pain={pain} setPain={setPain} />
+            <label style={fieldLabel}>Notes (optional)</label>
+            <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} style={{ ...inputStyle, resize: "none" }} />
+            <button onClick={submitNew} disabled={!cause.trim()} style={primaryBtn(!cause.trim())}>
+              Save injury
+            </button>
+          </div>
+        )}
+
+        {mode === "instance" && (
+          <div>
+            <div style={{ fontSize: 13.5, color: "#4B5F5C", marginBottom: 10 }}>Logging a new instance for this injury.</div>
+            <label style={fieldLabel}>Date</label>
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={inputStyle} />
+            <PainSlider pain={pain} setPain={setPain} />
+            <label style={fieldLabel}>Notes (optional)</label>
+            <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} style={{ ...inputStyle, resize: "none" }} />
+            <button onClick={submitInstance} style={primaryBtn(false)}>Save instance</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PainSlider({ pain, setPain }) {
+  return (
+    <div style={{ margin: "12px 0 4px" }}>
+      <label style={fieldLabel}>Pain right now: <span style={{ color: PAIN_COLOR(pain), fontWeight: 700 }}>{pain}/10</span></label>
+      <input type="range" min={0} max={10} value={pain} onChange={(e) => setPain(Number(e.target.value))}
+        style={{ width: "100%", accentColor: PAIN_COLOR(pain) }} />
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#8A9C98" }}>
+        <span>No pain</span><span>Worst pain</span>
+      </div>
+    </div>
+  );
+}
+
+const fieldLabel = { display: "block", fontSize: 12.5, fontWeight: 600, color: "#4B5F5C", margin: "10px 0 5px" };
+const inputStyle = {
+  width: "100%", boxSizing: "border-box", border: "1px solid #DCE6E3", borderRadius: 9,
+  padding: "9px 11px", fontSize: 14, color: "#1B2B29", background: "#fff", outline: "none",
+};
+const primaryBtn = (disabled) => ({
+  width: "100%", marginTop: 16, background: disabled ? "#B7C9C4" : "#2F6F63", color: "#fff",
+  border: "none", borderRadius: 10, padding: "12px 0", fontSize: 14.5, fontWeight: 600,
+  cursor: disabled ? "default" : "pointer",
+});
+
+/* ---------------------------------------------------------
+   Injury detail
+   --------------------------------------------------------- */
+function InjuryDetail({ injury, onClose, onUpdate, onDelete, onDeleteInstance, flags, setFlags }) {
+  const [tab, setTab] = useState("timeline");
+  const [showDiagDisclaimer, setShowDiagDisclaimer] = useState(false);
+  const [showRehabDisclaimer, setShowRehabDisclaimer] = useState(false);
+  const [diagPick, setDiagPick] = useState("");
+  const [exercises, setExercises] = useState(injury.rehabPlan?.exercises || []);
+  const [rehabNotes, setRehabNotes] = useState(injury.rehabPlan?.notes || "");
+  const [confirmDeleteInjury, setConfirmDeleteInjury] = useState(false);
+  const [confirmInstanceId, setConfirmInstanceId] = useState(null);
+
+  const group = REGION_GROUP[injury.regionId];
+  const options = REF_GROUPS[group] || [];
+
+  const startDiagnosis = () => {
+    if (flags.diagnosis) setDiagPick("__form");
+    else setShowDiagDisclaimer(true);
+  };
+  const ackDiagnosis = () => {
+    setShowDiagDisclaimer(false);
+    setFlags({ ...flags, diagnosis: true });
+    setDiagPick("__form");
+  };
+  const startRehab = () => {
+    if (flags.rehab) setTab("rehab-edit");
+    else setShowRehabDisclaimer(true);
+  };
+  const ackRehab = () => {
+    setShowRehabDisclaimer(false);
+    setFlags({ ...flags, rehab: true });
+    setTab("rehab-edit");
+  };
+
+  const saveDiagnosis = (name) => {
+    onUpdate({ ...injury, doctorDiagnosis: name, status: injury.status === "active" ? "recovering" : injury.status });
+    setDiagPick("");
+  };
+
+  const addExerciseRow = () =>
+    setExercises([...exercises, { id: uid(), name: "", sets: "", freq: "", restrictions: "" }]);
+  const updateExerciseRow = (id, patch) =>
+    setExercises(exercises.map((ex) => (ex.id === id ? { ...ex, ...patch } : ex)));
+  const removeExerciseRow = (id) => setExercises(exercises.filter((ex) => ex.id !== id));
+  const saveRehab = () => {
+    onUpdate({ ...injury, rehabPlan: { exercises, notes: rehabNotes } });
+    setTab("rehab");
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "#F6F8F7", zIndex: 40, overflowY: "auto" }}>
+      <div style={{ maxWidth: 430, margin: "0 auto", padding: "18px 18px 40px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "#2F6F63", fontSize: 14, fontWeight: 600, padding: 0, cursor: "pointer" }}>
+            ← Back
+          </button>
+          {confirmDeleteInjury ? (
+            <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 12.5, color: "#B5432E", fontWeight: 600 }}>Delete this whole record?</span>
+              <button onClick={onDelete} style={{ background: "#B5432E", color: "#fff", border: "none", borderRadius: 8, padding: "5px 10px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Delete</button>
+              <button onClick={() => setConfirmDeleteInjury(false)} style={{ background: "#fff", border: "1px solid #DCE6E3", borderRadius: 8, padding: "5px 10px", fontSize: 12, fontWeight: 600, cursor: "pointer", color: "#4B5F5C" }}>Cancel</button>
+            </span>
+          ) : (
+            <button onClick={() => setConfirmDeleteInjury(true)} style={{ background: "none", border: "none", color: "#B5432E", fontSize: 12.5, fontWeight: 600, cursor: "pointer", padding: 0 }}>
+              Delete record
+            </button>
+          )}
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div>
+            <div style={{ fontSize: 19, fontWeight: 700, color: "#1B2B29" }}>{REGION_LABEL[injury.regionId]}</div>
+            <div style={{ fontSize: 13.5, color: "#5A6D69", marginTop: 2 }}>{injury.cause}</div>
+          </div>
+          <Pill color={STATUS_META[injury.status].color} bg={STATUS_META[injury.status].bg}>
+            {STATUS_META[injury.status].label}
+          </Pill>
+        </div>
+
+        <div style={{ display: "flex", gap: 6, margin: "16px 0 14px" }}>
+          {["active", "recovering", "resolved", "recurring"].map((s) => (
+            <button
+              key={s}
+              onClick={() => onUpdate({ ...injury, status: s })}
+              style={{
+                fontSize: 11.5, fontWeight: 600, padding: "6px 10px", borderRadius: 20, cursor: "pointer",
+                border: injury.status === s ? "none" : "1px solid #DCE6E3",
+                background: injury.status === s ? STATUS_META[s].bg : "#fff",
+                color: injury.status === s ? STATUS_META[s].color : "#7A8B87",
+              }}
+            >
+              {STATUS_META[s].label}
+            </button>
+          ))}
+        </div>
+
+        <div style={{ display: "flex", borderBottom: "1px solid #DCE6E3", marginBottom: 14 }}>
+          {[["timeline", "Timeline"], ["diagnosis", "Diagnosis"], ["rehab", "Rehab plan"]].map(([k, l]) => (
+            <button key={k} onClick={() => setTab(k)}
+              style={{
+                background: "none", border: "none", padding: "8px 12px", fontSize: 13.5, cursor: "pointer",
+                fontWeight: 600, color: tab === k || (k === "rehab" && tab === "rehab-edit") ? "#2F6F63" : "#8A9C98",
+                borderBottom: tab === k || (k === "rehab" && tab === "rehab-edit") ? "2px solid #2F6F63" : "2px solid transparent",
+              }}>
+              {l}
+            </button>
+          ))}
+        </div>
+
+        {tab === "timeline" && (
+          <div>
+            {injury.instances.length === 0 && (
+              <div style={{ fontSize: 13, color: "#8A9C98", padding: "10px 2px" }}>No entries left for this injury.</div>
+            )}
+            {[...injury.instances].sort((a, b) => (a.date < b.date ? 1 : -1)).map((inst) => (
+              <div key={inst.id} style={{ background: "#fff", border: "1px solid #E3EAE8", borderRadius: 10, padding: "10px 12px", marginBottom: 8 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: "#1B2B29" }}>{fmtDate(inst.date)}</span>
+                  <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: PAIN_COLOR(inst.pain) }}>{inst.pain}/10</span>
+                    {confirmInstanceId === inst.id ? (
+                      <>
+                        <button onClick={() => { onDeleteInstance(inst.id); setConfirmInstanceId(null); }}
+                          style={{ background: "#B5432E", color: "#fff", border: "none", borderRadius: 7, padding: "3px 8px", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>Confirm</button>
+                        <button onClick={() => setConfirmInstanceId(null)}
+                          style={{ background: "none", border: "1px solid #DCE6E3", borderRadius: 7, padding: "3px 8px", fontSize: 11, cursor: "pointer", color: "#4B5F5C" }}>×</button>
+                      </>
+                    ) : (
+                      <button onClick={() => setConfirmInstanceId(inst.id)}
+                        style={{ background: "none", border: "none", color: "#B0BDB9", fontSize: 13, cursor: "pointer", padding: 0 }} title="Delete entry">🗑</button>
+                    )}
+                  </span>
+                </div>
+                {inst.notes && <div style={{ fontSize: 12.5, color: "#5A6D69", marginTop: 4 }}>{inst.notes}</div>}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {tab === "diagnosis" && diagPick !== "__form" && (
+          <div>
+            {injury.doctorDiagnosis ? (
+              <div style={{ background: "#fff", border: "1px solid #E3EAE8", borderRadius: 10, padding: "12px 14px", marginBottom: 12 }}>
+                <div style={{ fontSize: 12, color: "#8A9C98", marginBottom: 3 }}>Diagnosed by your doctor as</div>
+                <div style={{ fontSize: 14.5, fontWeight: 600, color: "#1B2B29" }}>{injury.doctorDiagnosis}</div>
+              </div>
+            ) : (
+              <div style={{ fontSize: 13.5, color: "#5A6D69", marginBottom: 12 }}>
+                No doctor diagnosis recorded yet.
+              </div>
+            )}
+            <button onClick={startDiagnosis} style={primaryBtn(false)}>
+              {injury.doctorDiagnosis ? "Update diagnosis" : "Record what your doctor diagnosed"}
+            </button>
+          </div>
+        )}
+
+        {tab === "diagnosis" && diagPick === "__form" && (
+          <div>
+            <div style={{ fontSize: 12.5, fontWeight: 600, color: "#4B5F5C", marginBottom: 8 }}>
+              What did your doctor diagnose?
+            </div>
+            {options.map((opt) => (
+              <button key={opt} onClick={() => saveDiagnosis(opt)}
+                style={{ display: "block", width: "100%", textAlign: "left", background: "#fff", border: "1px solid #DCE6E3", borderRadius: 9, padding: "10px 12px", marginBottom: 7, fontSize: 13.5, color: "#1B2B29", cursor: "pointer" }}>
+                {opt}
+              </button>
+            ))}
+            <div style={{ fontSize: 12, color: "#8A9C98", margin: "10px 0 5px" }}>Not on the list? Type it in:</div>
+            <input placeholder="Enter your doctor's diagnosis" style={inputStyle}
+              onKeyDown={(e) => { if (e.key === "Enter" && e.target.value.trim()) saveDiagnosis(e.target.value.trim()); }} />
+          </div>
+        )}
+
+        {tab === "rehab" && (
+          <div>
+            {injury.rehabPlan?.exercises?.length ? (
+              <div>
+                {injury.rehabPlan.exercises.map((ex) => (
+                  <div key={ex.id} style={{ background: "#fff", border: "1px solid #E3EAE8", borderRadius: 10, padding: "10px 12px", marginBottom: 8 }}>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: "#1B2B29" }}>{ex.name || "Exercise"}</div>
+                    <div style={{ fontSize: 12.5, color: "#5A6D69", marginTop: 2 }}>
+                      {ex.sets && <>{ex.sets} · </>}{ex.freq}
+                    </div>
+                    {ex.restrictions && <div style={{ fontSize: 12, color: "#B5432E", marginTop: 3 }}>⚠ {ex.restrictions}</div>}
+                  </div>
+                ))}
+                {injury.rehabPlan.notes && (
+                  <div style={{ fontSize: 12.5, color: "#5A6D69", fontStyle: "italic", marginTop: 4 }}>{injury.rehabPlan.notes}</div>
+                )}
+              </div>
+            ) : (
+              <div style={{ fontSize: 13.5, color: "#5A6D69", marginBottom: 12 }}>No rehab plan recorded yet.</div>
+            )}
+            <button onClick={startRehab} style={primaryBtn(false)}>
+              {injury.rehabPlan?.exercises?.length ? "Edit rehab plan" : "Add your doctor's rehab plan"}
+            </button>
+          </div>
+        )}
+
+        {tab === "rehab-edit" && (
+          <div>
+            <div style={{ fontSize: 12.5, color: "#5A6D69", marginBottom: 10 }}>
+              Enter exactly what your doctor or physical therapist told you.
+            </div>
+            {exercises.map((ex) => (
+              <div key={ex.id} style={{ background: "#fff", border: "1px solid #E3EAE8", borderRadius: 10, padding: "10px 12px", marginBottom: 8 }}>
+                <input placeholder="Exercise name" value={ex.name} onChange={(e) => updateExerciseRow(ex.id, { name: e.target.value })} style={{ ...inputStyle, marginBottom: 6 }} />
+                <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+                  <input placeholder="Sets/reps" value={ex.sets} onChange={(e) => updateExerciseRow(ex.id, { sets: e.target.value })} style={{ ...inputStyle, flex: 1 }} />
+                  <input placeholder="Frequency" value={ex.freq} onChange={(e) => updateExerciseRow(ex.id, { freq: e.target.value })} style={{ ...inputStyle, flex: 1 }} />
+                </div>
+                <input placeholder="Restrictions (optional)" value={ex.restrictions} onChange={(e) => updateExerciseRow(ex.id, { restrictions: e.target.value })} style={inputStyle} />
+                <button onClick={() => removeExerciseRow(ex.id)} style={{ background: "none", border: "none", color: "#B5432E", fontSize: 12, marginTop: 6, cursor: "pointer", padding: 0 }}>Remove</button>
+              </div>
+            ))}
+            <button onClick={addExerciseRow} style={{ width: "100%", background: "none", border: "1px dashed #9FBDB6", borderRadius: 10, padding: "10px 0", fontSize: 13.5, color: "#2F6F63", fontWeight: 600, cursor: "pointer", marginBottom: 10 }}>
+              + Add exercise
+            </button>
+            <label style={fieldLabel}>Other notes from your doctor</label>
+            <textarea value={rehabNotes} onChange={(e) => setRehabNotes(e.target.value)} rows={2} style={{ ...inputStyle, resize: "none" }} />
+            <button onClick={saveRehab} style={primaryBtn(false)}>Save rehab plan</button>
+          </div>
+        )}
+      </div>
+
+      {showDiagDisclaimer && (
+        <Disclaimer
+          text="This just records what your doctor told you. Bodylog doesn't diagnose conditions or suggest which one you might have — the list below is general reference information, not a recommendation for your case."
+          onAck={ackDiagnosis}
+        />
+      )}
+      {showRehabDisclaimer && (
+        <Disclaimer
+          text="This stores the plan your doctor or physical therapist gave you, so Bodylog can remind you about it. Bodylog doesn't create or modify rehab plans — only enter what a professional actually told you."
+          onAck={ackRehab}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   Injuries list tab
+   --------------------------------------------------------- */
+function InjuriesTab({ injuries, onOpen }) {
+  const order = ["active", "recovering", "recurring", "resolved"];
+  const grouped = order.map((s) => [s, injuries.filter((i) => i.status === s)]).filter(([, v]) => v.length);
+
+  if (!injuries.length) {
+    return (
+      <div style={{ textAlign: "center", padding: "60px 20px", color: "#8A9C98", fontSize: 13.5 }}>
+        Nothing logged yet. Tap a spot on the body map to start.
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {grouped.map(([status, list]) => (
+        <div key={status} style={{ marginBottom: 18 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: "#5A6D69", marginBottom: 8 }}>
+            {STATUS_META[status].label} · {list.length}
+          </div>
+          {list.map((inj) => {
+            const last = [...inj.instances].sort((a, b) => (a.date < b.date ? 1 : -1))[0];
+            return (
+              <button key={inj.id} onClick={() => onOpen(inj.id)}
+                style={{
+                  display: "block", width: "100%", textAlign: "left", background: "#fff",
+                  border: "1px solid #E3EAE8", borderRadius: 12, padding: "12px 14px", marginBottom: 8, cursor: "pointer",
+                }}>
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <span style={{ fontSize: 14.5, fontWeight: 600, color: "#1B2B29" }}>{REGION_LABEL[inj.regionId]}</span>
+                  {last && <span style={{ fontSize: 13, fontWeight: 700, color: PAIN_COLOR(last.pain) }}>{last.pain}/10</span>}
+                </div>
+                <div style={{ fontSize: 12.5, color: "#5A6D69", marginTop: 3 }}>
+                  {inj.cause} · {inj.instances.length} {inj.instances.length === 1 ? "entry" : "entries"}
+                  {last && <> · last {fmtDate(last.date)}</>}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   Reminders tab
+   --------------------------------------------------------- */
+function RemindersTab({ injuries, done, toggleDone }) {
+  const today = todayStr();
+  const items = [];
+  injuries
+    .filter((i) => i.status === "active" || i.status === "recovering")
+    .forEach((inj) => {
+      (inj.rehabPlan?.exercises || []).forEach((ex) => {
+        if (ex.name.trim()) items.push({ key: `${inj.id}_${ex.id}`, region: REGION_LABEL[inj.regionId], ...ex });
+      });
+    });
+
+  if (!items.length) {
+    return (
+      <div style={{ textAlign: "center", padding: "60px 20px", color: "#8A9C98", fontSize: 13.5 }}>
+        No active rehab plans yet. Add one from an injury's detail page to see reminders here.
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 12.5, fontWeight: 700, color: "#5A6D69", marginBottom: 10 }}>
+        Today · {new Date().toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" })}
+      </div>
+      {items.map((it) => {
+        const checked = !!done[`${today}_${it.key}`];
+        return (
+          <label key={it.key}
+            style={{
+              display: "flex", alignItems: "flex-start", gap: 10, background: "#fff", border: "1px solid #E3EAE8",
+              borderRadius: 12, padding: "12px 14px", marginBottom: 8, cursor: "pointer",
+            }}>
+            <input type="checkbox" checked={checked} onChange={() => toggleDone(`${today}_${it.key}`)} style={{ marginTop: 3, accentColor: "#2F6F63" }} />
+            <div style={{ flex: 1, textDecoration: checked ? "line-through" : "none", opacity: checked ? 0.55 : 1 }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: "#1B2B29" }}>{it.name}</div>
+              <div style={{ fontSize: 12, color: "#8A9C98", marginTop: 1 }}>{it.region} · {it.sets} {it.sets && it.freq && "·"} {it.freq}</div>
+              {it.restrictions && <div style={{ fontSize: 11.5, color: "#B5432E", marginTop: 2 }}>⚠ {it.restrictions}</div>}
+            </div>
+          </label>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   App
+   --------------------------------------------------------- */
+function Bodylog() {
+  const [tab, setTab] = useState("map");
+  const [bodyView, setBodyView] = useState("front");
+  const [injuries, setInjuries] = useState([]);
+  const [flags, setFlagsState] = useState({});
+  const [done, setDoneState] = useState({});
+  const [ready, setReady] = useState(false);
+  const [pickedRegion, setPickedRegion] = useState(null);
+  const [openInjuryId, setOpenInjuryId] = useState(null);
+
+  useEffect(() => {
+    (async () => {
+      const [inj, fl, dn] = await Promise.all([loadInjuries(), loadFlags(), loadDone()]);
+      setInjuries(inj); setFlagsState(fl); setDoneState(dn); setReady(true);
+    })();
+  }, []);
+
+  const persistInjuries = (list) => { setInjuries(list); saveInjuries(list); };
+  const setFlags = (f) => { setFlagsState(f); saveFlags(f); };
+  const toggleDone = (key) => {
+    const next = { ...done, [key]: !done[key] };
+    setDoneState(next); saveDone(next);
+  };
+
+  const createInjury = ({ regionId, cause, pain, date, notes }) => {
+    const inj = {
+      id: uid(), regionId, cause, status: "active", createdAt: date,
+      doctorDiagnosis: null, rehabPlan: null,
+      instances: [{ id: uid(), date, pain, notes }],
+    };
+    persistInjuries([inj, ...injuries]);
+  };
+  const addInstance = (injuryId, { date, pain, notes }) => {
+    persistInjuries(injuries.map((i) => i.id === injuryId ? { ...i, instances: [...i.instances, { id: uid(), date, pain, notes }] } : i));
+  };
+  const updateInjury = (updated) => {
+    persistInjuries(injuries.map((i) => (i.id === updated.id ? updated : i)));
+  };
+  const deleteInjury = (id) => {
+    persistInjuries(injuries.filter((i) => i.id !== id));
+    setOpenInjuryId(null);
+  };
+  const deleteInstance = (injuryId, instanceId) => {
+    persistInjuries(injuries.map((i) => (i.id === injuryId ? { ...i, instances: i.instances.filter((x) => x.id !== instanceId) } : i)));
+  };
+
+  const injuriesByRegion = {};
+  injuries.forEach((i) => {
+    if (i.status !== "resolved" && !injuriesByRegion[i.regionId]) injuriesByRegion[i.regionId] = i;
+  });
+
+  const openInjury = injuries.find((i) => i.id === openInjuryId);
+
+  if (!ready) {
+    return <div style={{ padding: 40, textAlign: "center", color: "#8A9C98", fontFamily: "sans-serif" }}>Loading…</div>;
+  }
+
+  return (
+    <div style={{ fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif", background: "#EFF3F2", minHeight: 620 }}>
+      <div style={{ maxWidth: 430, margin: "0 auto", padding: "20px 18px 90px", position: "relative" }}>
+        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 18 }}>
+          <span style={{ fontSize: 19, fontWeight: 800, color: "#1B2B29", letterSpacing: -0.3 }}>Bodylog</span>
+          <span style={{ fontSize: 12, color: "#8A9C98" }}>{injuries.length} tracked</span>
+        </div>
+
+        {tab === "map" && (
+          <div>
+            <div style={{ display: "flex", justifyContent: "center", gap: 6, marginBottom: 14 }}>
+              {["front", "back"].map((v) => (
+                <button key={v} onClick={() => setBodyView(v)}
+                  style={{
+                    fontSize: 13, fontWeight: 600, padding: "6px 16px", borderRadius: 20, cursor: "pointer",
+                    border: bodyView === v ? "none" : "1px solid #DCE6E3",
+                    background: bodyView === v ? "#2F6F63" : "#fff",
+                    color: bodyView === v ? "#fff" : "#4B5F5C",
+                  }}>
+                  {v === "front" ? "Front" : "Back"}
+                </button>
+              ))}
+            </div>
+            <BodySilhouette view={bodyView} injuriesByRegion={injuriesByRegion} onPick={setPickedRegion} />
+            <div style={{ textAlign: "center", fontSize: 12, color: "#8A9C98", marginTop: 10 }}>
+              Tap a spot to log or review an issue there
+            </div>
+          </div>
+        )}
+
+        {tab === "injuries" && <InjuriesTab injuries={injuries} onOpen={setOpenInjuryId} />}
+        {tab === "reminders" && <RemindersTab injuries={injuries} done={done} toggleDone={toggleDone} />}
+      </div>
+
+      <div style={{
+        position: "fixed", bottom: 0, left: 0, right: 0, background: "#fff",
+        borderTop: "1px solid #E3EAE8", display: "flex", justifyContent: "center", zIndex: 30,
+      }}>
+        <div style={{ maxWidth: 430, width: "100%", display: "flex" }}>
+          {[["map", "Body map"], ["injuries", "Injuries"], ["reminders", "Reminders"]].map(([k, l]) => (
+            <button key={k} onClick={() => setTab(k)}
+              style={{
+                flex: 1, padding: "13px 0", background: "none", border: "none", cursor: "pointer",
+                fontSize: 12.5, fontWeight: 600, color: tab === k ? "#2F6F63" : "#8A9C98",
+                borderTop: tab === k ? "2px solid #2F6F63" : "2px solid transparent", marginTop: -1,
+              }}>
+              {l}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {pickedRegion && (
+        <RegionPanel
+          regionId={pickedRegion}
+          existing={injuries.filter((i) => i.regionId === pickedRegion && i.status !== "resolved")}
+          onClose={() => setPickedRegion(null)}
+          onCreateNew={createInjury}
+          onAddInstance={addInstance}
+        />
+      )}
+      {openInjury && (
+        <InjuryDetail
+          injury={openInjury}
+          onClose={() => setOpenInjuryId(null)}
+          onUpdate={updateInjury}
+          onDelete={() => deleteInjury(openInjury.id)}
+          onDeleteInstance={(instanceId) => deleteInstance(openInjury.id, instanceId)}
+          flags={flags}
+          setFlags={setFlags}
+        />
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<Bodylog />);
+</script>
+<script>
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("./sw.js").catch(() => {
+        /* offline-caching just won't be active; app still works online */
+      });
+    });
+  }
+</script>
+</body>
+</html>
