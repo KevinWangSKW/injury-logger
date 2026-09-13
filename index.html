@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
-<title>Bodylog</title>
+<title>Injury Logger</title>
 <meta name="description" content="Personal injury and pain tracker" />
 <link rel="manifest" href="./manifest.json" />
 <link rel="icon" href="./icon-192.png" />
@@ -11,7 +11,7 @@
 <meta name="theme-color" content="#2F6F63" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-<meta name="apple-mobile-web-app-title" content="Bodylog" />
+<meta name="apple-mobile-web-app-title" content="Injury Logger" />
 <style>
   html, body { margin: 0; padding: 0; background: #EFF3F2; }
   * { -webkit-tap-highlight-color: transparent; }
@@ -24,7 +24,7 @@
 <div id="root"></div>
 <script type="text/babel">
 /* ---------------------------------------------------------
-   Bodylog — personal injury & pain tracker (MVP)
+   Injury Logger — personal injury & pain tracker (MVP)
    Standalone build: uses browser localStorage instead of
    the Claude-artifact window.storage API, so it runs anywhere.
    --------------------------------------------------------- */
@@ -130,6 +130,8 @@ const fmtDate = (d) =>
 /* ---------------------------------------------------------
    Storage helpers — plain browser localStorage, fully offline,
    fully on-device. Nothing leaves the phone/computer.
+   Note: keys keep their original "bodylog-" prefix on purpose,
+   so anyone who already used the deployed app doesn't lose data.
    --------------------------------------------------------- */
 function loadJSON(key, fallback) {
   try {
@@ -606,13 +608,13 @@ function InjuryDetail({ injury, onClose, onUpdate, onDelete, onDeleteInstance, f
 
       {showDiagDisclaimer && (
         <Disclaimer
-          text="This just records what your doctor told you. Bodylog doesn't diagnose conditions or suggest which one you might have — the list below is general reference information, not a recommendation for your case."
+          text="This just records what your doctor told you. Injury Logger doesn't diagnose conditions or suggest which one you might have — the list below is general reference information, not a recommendation for your case."
           onAck={ackDiagnosis}
         />
       )}
       {showRehabDisclaimer && (
         <Disclaimer
-          text="This stores the plan your doctor or physical therapist gave you, so Bodylog can remind you about it. Bodylog doesn't create or modify rehab plans — only enter what a professional actually told you."
+          text="This stores the plan your doctor or physical therapist gave you, so Injury Logger can remind you about it. Injury Logger doesn't create or modify rehab plans — only enter what a professional actually told you."
           onAck={ackRehab}
         />
       )}
@@ -716,9 +718,118 @@ function RemindersTab({ injuries, done, toggleDone }) {
 }
 
 /* ---------------------------------------------------------
+   Report tab — doctor-visit summary, filterable, printable
+   --------------------------------------------------------- */
+function ReportTab({ injuries }) {
+  const [regionFilter, setRegionFilter] = useState("all");
+  const [diagFilter, setDiagFilter] = useState("all");
+
+  const regionsPresent = [...new Set(injuries.map((i) => i.regionId))];
+  const diagnosesPresent = [...new Set(injuries.filter((i) => i.doctorDiagnosis).map((i) => i.doctorDiagnosis))];
+
+  const filtered = injuries.filter((i) => {
+    if (regionFilter !== "all" && i.regionId !== regionFilter) return false;
+    if (diagFilter !== "all" && i.doctorDiagnosis !== diagFilter) return false;
+    return true;
+  });
+
+  const allInstances = filtered.flatMap((i) => i.instances);
+  const avgPain = allInstances.length ? (allInstances.reduce((s, x) => s + x.pain, 0) / allInstances.length).toFixed(1) : null;
+  const allDates = allInstances.map((x) => x.date).sort();
+  const dateRange = allDates.length ? `${fmtDate(allDates[0])} – ${fmtDate(allDates[allDates.length - 1])}` : null;
+
+  if (!injuries.length) {
+    return (
+      <div style={{ textAlign: "center", padding: "60px 20px", color: "#8A9C98", fontSize: 13.5 }}>
+        Nothing logged yet, so there's nothing to report on.
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <style>{`
+        @media print {
+          .no-print { display: none !important; }
+          body { background: #fff !important; }
+          .print-card { break-inside: avoid; border: 1px solid #ccc !important; }
+        }
+      `}</style>
+
+      <div className="no-print" style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+        <select value={regionFilter} onChange={(e) => setRegionFilter(e.target.value)} style={{ ...inputStyle, flex: 1 }}>
+          <option value="all">All regions</option>
+          {regionsPresent.map((id) => <option key={id} value={id}>{REGION_LABEL[id]}</option>)}
+        </select>
+        <select value={diagFilter} onChange={(e) => setDiagFilter(e.target.value)} style={{ ...inputStyle, flex: 1 }}>
+          <option value="all">All diagnoses</option>
+          {diagnosesPresent.map((d) => <option key={d} value={d}>{d}</option>)}
+        </select>
+      </div>
+
+      {!filtered.length ? (
+        <div style={{ textAlign: "center", padding: "40px 20px", color: "#8A9C98", fontSize: 13.5 }}>
+          No injuries match that filter.
+        </div>
+      ) : (
+        <>
+          <div className="print-card" style={{ background: "#fff", border: "1px solid #E3EAE8", borderRadius: 12, padding: "14px 16px", marginBottom: 14 }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "#1B2B29", marginBottom: 6 }}>Summary</div>
+            <div style={{ fontSize: 13, color: "#4B5F5C", lineHeight: 1.7 }}>
+              {filtered.length} {filtered.length === 1 ? "injury" : "injuries"} · {allInstances.length} logged {allInstances.length === 1 ? "entry" : "entries"}
+              {avgPain && <> · average pain {avgPain}/10</>}
+              {dateRange && <><br />{dateRange}</>}
+            </div>
+          </div>
+
+          {filtered.map((inj) => {
+            const sorted = [...inj.instances].sort((a, b) => (a.date < b.date ? 1 : -1));
+            return (
+              <div key={inj.id} className="print-card" style={{ background: "#fff", border: "1px solid #E3EAE8", borderRadius: 12, padding: "14px 16px", marginBottom: 12 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
+                  <div style={{ fontSize: 14.5, fontWeight: 700, color: "#1B2B29" }}>{REGION_LABEL[inj.regionId]}</div>
+                  <Pill color={STATUS_META[inj.status].color} bg={STATUS_META[inj.status].bg}>{STATUS_META[inj.status].label}</Pill>
+                </div>
+                <div style={{ fontSize: 12.5, color: "#5A6D69", marginBottom: 8 }}>{inj.cause}</div>
+                {inj.doctorDiagnosis && (
+                  <div style={{ fontSize: 12.5, color: "#1B2B29", marginBottom: 8 }}>
+                    <strong>Diagnosed:</strong> {inj.doctorDiagnosis}
+                  </div>
+                )}
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#8A9C98", marginBottom: 4 }}>TIMELINE</div>
+                {sorted.map((inst) => (
+                  <div key={inst.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, color: "#3E4F4B", padding: "3px 0", borderTop: "1px solid #F0F3F2" }}>
+                    <span>{fmtDate(inst.date)}{inst.notes ? ` — ${inst.notes}` : ""}</span>
+                    <span style={{ fontWeight: 700, color: PAIN_COLOR(inst.pain) }}>{inst.pain}/10</span>
+                  </div>
+                ))}
+                {inj.rehabPlan?.exercises?.length > 0 && (
+                  <>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: "#8A9C98", marginTop: 8, marginBottom: 4 }}>REHAB PLAN ON FILE</div>
+                    {inj.rehabPlan.exercises.map((ex) => (
+                      <div key={ex.id} style={{ fontSize: 12.5, color: "#3E4F4B", padding: "2px 0" }}>
+                        {ex.name}{ex.sets ? ` — ${ex.sets}` : ""}{ex.freq ? `, ${ex.freq}` : ""}
+                      </div>
+                    ))}
+                  </>
+                )}
+              </div>
+            );
+          })}
+
+          <button onClick={() => window.print()} className="no-print" style={primaryBtn(false)}>
+            Print / save as PDF
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
    App
    --------------------------------------------------------- */
-function Bodylog() {
+function InjuryLogger() {
   const [tab, setTab] = useState("map");
   const [bodyView, setBodyView] = useState("front");
   const [injuries, setInjuries] = useState([]);
@@ -779,7 +890,7 @@ function Bodylog() {
     <div style={{ fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif", background: "#EFF3F2", minHeight: 620 }}>
       <div style={{ maxWidth: 430, margin: "0 auto", padding: "20px 18px 90px", position: "relative" }}>
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 18 }}>
-          <span style={{ fontSize: 19, fontWeight: 800, color: "#1B2B29", letterSpacing: -0.3 }}>Bodylog</span>
+          <span style={{ fontSize: 19, fontWeight: 800, color: "#1B2B29", letterSpacing: -0.3 }}>Injury Logger</span>
           <span style={{ fontSize: 12, color: "#8A9C98" }}>{injuries.length} tracked</span>
         </div>
 
@@ -806,15 +917,16 @@ function Bodylog() {
         )}
 
         {tab === "injuries" && <InjuriesTab injuries={injuries} onOpen={setOpenInjuryId} />}
+        {tab === "report" && <ReportTab injuries={injuries} />}
         {tab === "reminders" && <RemindersTab injuries={injuries} done={done} toggleDone={toggleDone} />}
       </div>
 
-      <div style={{
+      <div className="no-print" style={{
         position: "fixed", bottom: 0, left: 0, right: 0, background: "#fff",
         borderTop: "1px solid #E3EAE8", display: "flex", justifyContent: "center", zIndex: 30,
       }}>
         <div style={{ maxWidth: 430, width: "100%", display: "flex" }}>
-          {[["map", "Body map"], ["injuries", "Injuries"], ["reminders", "Reminders"]].map(([k, l]) => (
+          {[["map", "Body map"], ["injuries", "Injuries"], ["report", "Report"], ["reminders", "Reminders"]].map(([k, l]) => (
             <button key={k} onClick={() => setTab(k)}
               style={{
                 flex: 1, padding: "13px 0", background: "none", border: "none", cursor: "pointer",
@@ -851,7 +963,7 @@ function Bodylog() {
   );
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(<Bodylog />);
+ReactDOM.createRoot(document.getElementById("root")).render(<InjuryLogger />);
 </script>
 <script>
   if ("serviceWorker" in navigator) {

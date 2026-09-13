@@ -1,4 +1,4 @@
-const CACHE_NAME = "bodylog-v1";
+const CACHE_NAME = "injury-logger-v1";
 
 const SAME_ORIGIN_ASSETS = [
   "./",

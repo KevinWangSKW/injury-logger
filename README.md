@@ -1,4 +1,4 @@
-# Bodylog
+# Injury Logger
 
 A personal injury and pain tracker. Everything you log stays on your own
 device — nothing is sent anywhere.

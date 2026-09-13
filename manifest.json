@@ -1,6 +1,6 @@
 {
-  "name": "Bodylog",
-  "short_name": "Bodylog",
+  "name": "Injury Logger",
+  "short_name": "Injury Logger",
   "description": "Personal injury and pain tracker",
   "start_url": "./index.html",
   "scope": "./",
