@@ -1025,6 +1025,12 @@ function Body3D({ injuriesByRegion, onPick }) {
       "./body-model.glb",
       (gltf) => {
         modelRoot = gltf.scene;
+        // This particular file has cumulative baked-in scale transforms
+        // (Sketchfab axis correction x 0.01 export scale x 0.9 body-node
+        // scale = 0.009 total), which shrinks it to about 1/111th the size
+        // the camera and landmark coordinates below were designed around.
+        // Undo that so the model's real-world size matches those numbers.
+        modelRoot.scale.setScalar(1 / 0.009);
         modelRoot.traverse((o) => {
           if (o.isMesh) {
             o.material = new THREE.MeshStandardMaterial({ color: 0x6F9B92, roughness: 0.85, metalness: 0 });
