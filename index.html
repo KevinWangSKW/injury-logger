@@ -992,15 +992,19 @@ function Body3D({ injuriesByRegion, onPick }) {
     const camera = new THREE.PerspectiveCamera(35, width / height, 1, 2000);
     camera.position.set(0, 115, 320);
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     renderer.setSize(width, height);
     container.appendChild(renderer.domElement);
 
-    scene.add(new THREE.AmbientLight(0xffffff, 0.95));
-    const dirLight = new THREE.DirectionalLight(0xffffff, 0.55);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.65));
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.9);
     dirLight.position.set(100, 220, 180);
     scene.add(dirLight);
+    const fillLight = new THREE.DirectionalLight(0xffffff, 0.35);
+    fillLight.position.set(-120, 80, -100);
+    scene.add(fillLight);
+    scene.background = new THREE.Color(0xE3EBE9);
 
     const controls = new THREE.OrbitControls(camera, renderer.domElement);
     controls.target.set(0, 100, 0);
@@ -1023,7 +1027,7 @@ function Body3D({ injuriesByRegion, onPick }) {
         modelRoot = gltf.scene;
         modelRoot.traverse((o) => {
           if (o.isMesh) {
-            o.material = new THREE.MeshStandardMaterial({ color: 0xdceae6, roughness: 0.9, metalness: 0 });
+            o.material = new THREE.MeshStandardMaterial({ color: 0x6F9B92, roughness: 0.85, metalness: 0 });
           }
         });
         scene.add(modelRoot);
@@ -1033,11 +1037,20 @@ function Body3D({ injuriesByRegion, onPick }) {
       () => setStatus("error")
     );
 
-    let didDrag = false;
-    const onDown = () => { didDrag = false; };
-    const onMove = () => { didDrag = true; };
+    // Tap vs. drag: a real tap on a touchscreen almost always includes a
+    // pixel or two of natural finger movement, so "any movement = drag"
+    // made taps feel unreliable. Only treat it as a drag/rotate past a
+    // small real threshold.
+    let downX = 0, downY = 0, moved = 0;
+    const DRAG_THRESHOLD = 8;
+    const onDown = (e) => {
+      downX = e.clientX; downY = e.clientY; moved = 0;
+    };
+    const onMove = (e) => {
+      moved = Math.max(moved, Math.hypot(e.clientX - downX, e.clientY - downY));
+    };
     const onTap = (e) => {
-      if (didDrag || !modelRoot) return;
+      if (moved > DRAG_THRESHOLD || !modelRoot) return;
       const rect = renderer.domElement.getBoundingClientRect();
       const clientX = e.changedTouches ? e.changedTouches[0].clientX : e.clientX;
       const clientY = e.changedTouches ? e.changedTouches[0].clientY : e.clientY;
@@ -1104,7 +1117,7 @@ function Body3D({ injuriesByRegion, onPick }) {
 
   return (
     <div>
-      <div ref={containerRef} style={{ width: "100%", height: 420, borderRadius: 14, overflow: "hidden", background: "#EFF3F2" }} />
+      <div ref={containerRef} style={{ width: "100%", height: 420, borderRadius: 14, overflow: "hidden", background: "#E3EBE9" }} />
       {status === "loading" && <div style={{ textAlign: "center", fontSize: 12, color: "#8A9C98", marginTop: 10 }}>Loading 3D model…</div>}
       {status === "error" && (
         <div style={{ textAlign: "center", fontSize: 12, color: "#B5432E", marginTop: 10 }}>
