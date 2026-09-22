@@ -19,24 +19,32 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.149.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.149.0/examples/js/loaders/GLTFLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.149.0/examples/js/controls/OrbitControls.js"></script>
 </head>
 <body>
 <div id="root"></div>
 <script type="text/babel">
 /* ---------------------------------------------------------
    Injury Logger — personal injury & pain tracker (MVP)
-   Standalone build: uses browser localStorage instead of
-   the Claude-artifact window.storage API, so it runs anywhere.
+   Standalone build with real 3D body picker (Three.js + the
+   uploaded body-model.glb). Uses browser localStorage instead
+   of the Claude-artifact window.storage API.
    --------------------------------------------------------- */
 const { useState, useEffect, useRef } = React;
 
 const REGIONS = [
   { id: "head", label: "Head" },
   { id: "neck", label: "Neck" },
-  { id: "chest", label: "Chest" },
-  { id: "upper_back", label: "Upper back" },
-  { id: "abdomen", label: "Abdomen" },
-  { id: "lower_back", label: "Lower back" },
+  { id: "left_chest", label: "Left chest" },
+  { id: "right_chest", label: "Right chest" },
+  { id: "left_upper_back", label: "Left upper back" },
+  { id: "right_upper_back", label: "Right upper back" },
+  { id: "left_abdomen", label: "Left abdomen" },
+  { id: "right_abdomen", label: "Right abdomen" },
+  { id: "left_lower_back", label: "Left lower back" },
+  { id: "right_lower_back", label: "Right lower back" },
   { id: "left_shoulder", label: "Left shoulder" },
   { id: "right_shoulder", label: "Right shoulder" },
   { id: "left_upper_arm", label: "Left upper arm" },
@@ -58,12 +66,19 @@ const REGIONS = [
   { id: "left_ankle_foot", label: "Left ankle / foot" },
   { id: "right_ankle_foot", label: "Right ankle / foot" },
 ];
-const REGION_LABEL = Object.fromEntries(REGIONS.map((r) => [r.id, r.label]));
+// Legacy ids from before the torso was split left/right — kept only so any
+// injury already logged under the old, single-midline id still displays
+// correctly. They're intentionally left out of REGIONS/the picker itself.
+const LEGACY_REGION_LABEL = {
+  chest: "Chest (older entry)", abdomen: "Abdomen (older entry)",
+  upper_back: "Upper back (older entry)", lower_back: "Lower back (older entry)",
+};
+const REGION_LABEL = { ...Object.fromEntries(REGIONS.map((r) => [r.id, r.label])), ...LEGACY_REGION_LABEL };
 
-// x/y positions on a shared 300x620 canvas, per view
-const FRONT_POS = {
-  head: [150, 38], neck: [150, 66], chest: [150, 118],
-  abdomen: [150, 178],
+// x/y positions on a shared 300x620 canvas — limbs/head/neck are identical
+// front and back; only the torso split differs between the two views.
+const SHARED_POS = {
+  head: [150, 38], neck: [150, 66],
   left_shoulder: [104, 92], right_shoulder: [196, 92],
   left_upper_arm: [84, 148], right_upper_arm: [216, 148],
   left_elbow: [78, 206], right_elbow: [222, 206],
@@ -75,9 +90,16 @@ const FRONT_POS = {
   left_lower_leg: [129, 448], right_lower_leg: [171, 448],
   left_ankle_foot: [129, 520], right_ankle_foot: [171, 520],
 };
-const BACK_POS = { ...FRONT_POS, upper_back: [150, 118], lower_back: [150, 178] };
-delete BACK_POS.chest;
-delete BACK_POS.abdomen;
+const FRONT_POS = {
+  ...SHARED_POS,
+  left_chest: [128, 108], right_chest: [172, 108],
+  left_abdomen: [128, 185], right_abdomen: [172, 185],
+};
+const BACK_POS = {
+  ...SHARED_POS,
+  left_upper_back: [128, 108], right_upper_back: [172, 108],
+  left_lower_back: [128, 185], right_lower_back: [172, 185],
+};
 
 const FRONT_REGIONS = REGIONS.filter((r) => FRONT_POS[r.id]).map((r) => r.id);
 const BACK_REGIONS = REGIONS.filter((r) => BACK_POS[r.id]).map((r) => r.id);
@@ -100,7 +122,13 @@ const REF_GROUPS = {
   ankle_foot: ["Ankle sprain", "Achilles tendinitis", "Plantar fasciitis", "Stress fracture"],
 };
 const REGION_GROUP = {
-  head: "head", neck: "neck", chest: "chest", upper_back: "back", lower_back: "back", abdomen: "abdomen",
+  head: "head", neck: "neck",
+  left_chest: "chest", right_chest: "chest",
+  left_upper_back: "back", right_upper_back: "back",
+  left_abdomen: "abdomen", right_abdomen: "abdomen",
+  left_lower_back: "back", right_lower_back: "back",
+  // legacy ids, in case an older injury still references them
+  chest: "chest", abdomen: "abdomen", upper_back: "back", lower_back: "back",
   left_shoulder: "shoulder", right_shoulder: "shoulder",
   left_upper_arm: "arm", right_upper_arm: "arm",
   left_elbow: "elbow", right_elbow: "elbow",
@@ -177,37 +205,66 @@ function Pill({ children, color, bg }) {
 // (works well on Chrome/Android; support on Safari/iOS varies).
 function MicButton({ onResult }) {
   const [listening, setListening] = useState(false);
+  const [errored, setErrored] = useState(false);
   const recRef = useRef(null);
   const SpeechRec = typeof window !== "undefined" && (window.SpeechRecognition || window.webkitSpeechRecognition);
   if (!SpeechRec) return null;
 
-  const start = () => {
+  const buildRecognition = () => {
     const rec = new SpeechRec();
     rec.lang = "en-US";
     rec.interimResults = false;
     rec.maxAlternatives = 1;
-    rec.onresult = (e) => onResult(e.results[0][0].transcript.trim());
-    rec.onend = () => setListening(false);
-    rec.onerror = () => setListening(false);
-    recRef.current = rec;
-    setListening(true);
-    rec.start();
+    rec.continuous = false;
+    rec.onstart = () => { setErrored(false); setListening(true); };
+    rec.onresult = (e) => {
+      const transcript = e.results?.[0]?.[0]?.transcript?.trim();
+      if (transcript) onResult(transcript);
+    };
+    rec.onend = () => { setListening(false); recRef.current = null; };
+    rec.onerror = () => { setListening(false); setErrored(true); recRef.current = null; };
+    return rec;
   };
-  const stop = () => { recRef.current && recRef.current.stop(); setListening(false); };
+
+  const start = () => {
+    // Clear out anything left over from a previous attempt first — reusing
+    // a stale instance, or starting a new one while an old one hasn't fully
+    // ended, is what makes this silently stop working after the first use.
+    if (recRef.current) {
+      try { recRef.current.abort(); } catch { /* already stopped */ }
+      recRef.current = null;
+    }
+    const rec = buildRecognition();
+    recRef.current = rec;
+    try {
+      rec.start();
+    } catch {
+      setListening(false);
+      setErrored(true);
+      recRef.current = null;
+    }
+  };
+  const stop = () => {
+    if (recRef.current) {
+      try { recRef.current.stop(); } catch { /* already stopped */ }
+    }
+    setListening(false);
+  };
 
   return (
     <button
       type="button"
       onClick={listening ? stop : start}
-      title={listening ? "Stop dictating" : "Dictate"}
+      title={listening ? "Stop dictating" : errored ? "Didn't catch that — tap to try again" : "Dictate"}
       style={{
         position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)",
-        background: listening ? "#B5432E" : "#EAF1EF", color: listening ? "#fff" : "#2F6F63",
+        background: listening ? "#B5432E" : errored ? "#F4E1DC" : "#EAF1EF",
+        color: listening ? "#fff" : errored ? "#B5432E" : "#2F6F63",
         border: "none", borderRadius: 7, width: 25, height: 25, fontSize: 12.5,
         cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0,
       }}
     >
-      {listening ? "●" : "🎤"}
+      {listening ? "●" : errored ? "!" : "🎤"}
     </button>
   );
 }
@@ -882,6 +939,191 @@ function ReportTab({ injuries }) {
   );
 }
 
+
+// 3D landmark points (x, y, z) in the loaded model's own coordinate space.
+// Measured from the real mesh: it's a T-pose figure, ~200 units tall,
+// arm-span ~200 units, torso depth from about -16 (back) to +24 (front).
+// These are a first-pass approximation based on those real proportions —
+// nearest-point matching, same idea as the 2D map's fixed dot positions.
+const LANDMARKS_3D = {
+  head: [0, 192, 3], neck: [0, 175, 2],
+  left_chest: [-14, 142, 15], right_chest: [14, 142, 15],
+  left_upper_back: [-14, 142, -10], right_upper_back: [14, 142, -10],
+  left_abdomen: [-14, 112, 13], right_abdomen: [14, 112, 13],
+  left_lower_back: [-14, 112, -9], right_lower_back: [14, 112, -9],
+  left_shoulder: [-24, 158, 2], right_shoulder: [24, 158, 2],
+  left_upper_arm: [-40, 157, 1], right_upper_arm: [40, 157, 1],
+  left_elbow: [-55, 156, 1], right_elbow: [55, 156, 1],
+  left_forearm: [-72, 155, 1], right_forearm: [72, 155, 1],
+  left_wrist_hand: [-90, 154, 1], right_wrist_hand: [90, 154, 1],
+  left_hip: [-11, 100, 3], right_hip: [11, 100, 3],
+  left_thigh: [-11, 78, 2], right_thigh: [11, 78, 2],
+  left_knee: [-11, 57, 2], right_knee: [11, 57, 2],
+  left_lower_leg: [-10, 35, 1], right_lower_leg: [10, 35, 1],
+  left_ankle_foot: [-10, 6, 3], right_ankle_foot: [10, 6, 3],
+};
+
+function nearestRegion3D(point) {
+  let best = null, bestDist = Infinity;
+  for (const id in LANDMARKS_3D) {
+    const [x, y, z] = LANDMARKS_3D[id];
+    const d = (point.x - x) ** 2 + (point.y - y) ** 2 + (point.z - z) ** 2;
+    if (d < bestDist) { bestDist = d; best = id; }
+  }
+  return best;
+}
+
+// The 3D body picker — replaces the 2D map on the deployed build only
+// (the chat preview can't load the uploaded .glb as a servable file).
+function Body3D({ injuriesByRegion, onPick }) {
+  const containerRef = useRef(null);
+  const [status, setStatus] = useState("loading");
+  const sceneRef = useRef({});
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || !window.THREE || !window.THREE.GLTFLoader) { setStatus("error"); return; }
+    const THREE = window.THREE;
+
+    const width = container.clientWidth;
+    const height = container.clientHeight;
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(35, width / height, 1, 2000);
+    camera.position.set(0, 115, 320);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setSize(width, height);
+    container.appendChild(renderer.domElement);
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.95));
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.55);
+    dirLight.position.set(100, 220, 180);
+    scene.add(dirLight);
+
+    const controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.target.set(0, 100, 0);
+    controls.enablePan = false;
+    controls.minDistance = 150;
+    controls.maxDistance = 480;
+    controls.update();
+
+    const markerGroup = new THREE.Group();
+    scene.add(markerGroup);
+    sceneRef.current = { markerGroup, THREE };
+
+    let modelRoot = null;
+    const raycaster = new THREE.Raycaster();
+    const pointer = new THREE.Vector2();
+
+    new THREE.GLTFLoader().load(
+      "./body-model.glb",
+      (gltf) => {
+        modelRoot = gltf.scene;
+        modelRoot.traverse((o) => {
+          if (o.isMesh) {
+            o.material = new THREE.MeshStandardMaterial({ color: 0xdceae6, roughness: 0.9, metalness: 0 });
+          }
+        });
+        scene.add(modelRoot);
+        setStatus("ready");
+      },
+      undefined,
+      () => setStatus("error")
+    );
+
+    let didDrag = false;
+    const onDown = () => { didDrag = false; };
+    const onMove = () => { didDrag = true; };
+    const onTap = (e) => {
+      if (didDrag || !modelRoot) return;
+      const rect = renderer.domElement.getBoundingClientRect();
+      const clientX = e.changedTouches ? e.changedTouches[0].clientX : e.clientX;
+      const clientY = e.changedTouches ? e.changedTouches[0].clientY : e.clientY;
+      pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+      pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(pointer, camera);
+      const hits = raycaster.intersectObject(modelRoot, true);
+      if (hits.length) {
+        const regionId = nearestRegion3D(hits[0].point);
+        if (regionId) onPick(regionId);
+      }
+    };
+    const dom = renderer.domElement;
+    dom.style.touchAction = "none";
+    dom.addEventListener("pointerdown", onDown);
+    dom.addEventListener("pointermove", onMove);
+    dom.addEventListener("pointerup", onTap);
+
+    let raf;
+    const animate = () => {
+      raf = requestAnimationFrame(animate);
+      controls.update();
+      renderer.render(scene, camera);
+    };
+    animate();
+
+    const handleResize = () => {
+      const w = container.clientWidth, h = container.clientHeight;
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+    };
+    window.addEventListener("resize", handleResize);
+
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", handleResize);
+      dom.removeEventListener("pointerdown", onDown);
+      dom.removeEventListener("pointermove", onMove);
+      dom.removeEventListener("pointerup", onTap);
+      controls.dispose();
+      renderer.dispose();
+      if (container.contains(dom)) container.removeChild(dom);
+    };
+  }, []);
+
+  useEffect(() => {
+    const { markerGroup, THREE } = sceneRef.current;
+    if (!markerGroup || !THREE) return;
+    while (markerGroup.children.length) markerGroup.remove(markerGroup.children[0]);
+    Object.keys(injuriesByRegion).forEach((regionId) => {
+      const pos = LANDMARKS_3D[regionId];
+      if (!pos) return;
+      const injury = injuriesByRegion[regionId];
+      const color = new THREE.Color(STATUS_META[injury.status].color);
+      const sphere = new THREE.Mesh(
+        new THREE.SphereGeometry(4, 16, 16),
+        new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.3 })
+      );
+      sphere.position.set(pos[0], pos[1], pos[2] + 2);
+      markerGroup.add(sphere);
+    });
+  }, [injuriesByRegion]);
+
+  return (
+    <div>
+      <div ref={containerRef} style={{ width: "100%", height: 420, borderRadius: 14, overflow: "hidden", background: "#EFF3F2" }} />
+      {status === "loading" && <div style={{ textAlign: "center", fontSize: 12, color: "#8A9C98", marginTop: 10 }}>Loading 3D model…</div>}
+      {status === "error" && (
+        <div style={{ textAlign: "center", fontSize: 12, color: "#B5432E", marginTop: 10 }}>
+          Couldn't load the 3D model — make sure body-model.glb is uploaded alongside this page.
+        </div>
+      )}
+      {status === "ready" && (
+        <div style={{ textAlign: "center", fontSize: 12, color: "#8A9C98", marginTop: 10 }}>
+          Drag to rotate · tap a spot to log or review an issue there
+        </div>
+      )}
+      <div style={{ textAlign: "center", fontSize: 10.5, color: "#B0BDB9", marginTop: 6 }}>
+        3D model: "Human Body Base Mesh Male" by ferrumiron6, licensed CC BY 4.0
+      </div>
+    </div>
+  );
+}
+
+
 /* ---------------------------------------------------------
    App
    --------------------------------------------------------- */
@@ -951,25 +1193,7 @@ function InjuryLogger() {
         </div>
 
         {tab === "map" && (
-          <div>
-            <div style={{ display: "flex", justifyContent: "center", gap: 6, marginBottom: 14 }}>
-              {["front", "back"].map((v) => (
-                <button key={v} onClick={() => setBodyView(v)}
-                  style={{
-                    fontSize: 13, fontWeight: 600, padding: "6px 16px", borderRadius: 20, cursor: "pointer",
-                    border: bodyView === v ? "none" : "1px solid #DCE6E3",
-                    background: bodyView === v ? "#2F6F63" : "#fff",
-                    color: bodyView === v ? "#fff" : "#4B5F5C",
-                  }}>
-                  {v === "front" ? "Front" : "Back"}
-                </button>
-              ))}
-            </div>
-            <BodySilhouette view={bodyView} injuriesByRegion={injuriesByRegion} onPick={setPickedRegion} />
-            <div style={{ textAlign: "center", fontSize: 12, color: "#8A9C98", marginTop: 10 }}>
-              Tap a spot to log or review an issue there
-            </div>
-          </div>
+          <Body3D injuriesByRegion={injuriesByRegion} onPick={setPickedRegion} />
         )}
 
         {tab === "injuries" && <InjuriesTab injuries={injuries} onOpen={setOpenInjuryId} />}
