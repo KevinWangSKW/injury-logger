@@ -1,4 +1,4 @@
-const CACHE_NAME = "injury-logger-v5";
+const CACHE_NAME = "injury-logger-v6";
 
 const SAME_ORIGIN_ASSETS = [
   "./",
@@ -14,9 +14,9 @@ const CDN_ASSETS = [
   "https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js",
   "https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js",
   "https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js",
-  "https://cdn.jsdelivr.net/npm/three@0.149.0/build/three.min.js",
-  "https://cdn.jsdelivr.net/npm/three@0.149.0/examples/js/loaders/GLTFLoader.js",
-  "https://cdn.jsdelivr.net/npm/three@0.149.0/examples/js/controls/OrbitControls.js",
+  "https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js",
+  "https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js",
+  "https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js",
 ];
 
 self.addEventListener("install", (event) => {
