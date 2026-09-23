@@ -151,6 +151,7 @@ const STATUS_META = {
 const PAIN_COLOR = (p) => (p <= 3 ? "#5F8F6E" : p <= 6 ? "#C98A2E" : "#B5432E");
 
 const uid = () => Math.random().toString(36).slice(2, 10);
+const APP_VERSION = "v9";
 const todayStr = () => new Date().toISOString().slice(0, 10);
 const fmtDate = (d) =>
   new Date(d + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
@@ -940,11 +941,11 @@ function ReportTab({ injuries }) {
 }
 
 
-// 3D landmark points (x, y, z) in the loaded model's own coordinate space.
-// Measured from the real mesh: it's a T-pose figure, ~200 units tall,
-// arm-span ~200 units, torso depth from about -16 (back) to +24 (front).
-// These are a first-pass approximation based on those real proportions —
-// nearest-point matching, same idea as the 2D map's fixed dot positions.
+// 3D landmark points (x, y, z) in the loaded model's own coordinate space —
+// used only to classify a tap into one of the app's region ids (for the
+// diagnosis reference list / reports). Measured from the real mesh: it's a
+// T-pose figure, ~200 units tall, arm-span ~200, torso depth about -16
+// (back) to +24 (front). First-pass approximation — nearest-point matching.
 const LANDMARKS_3D = {
   head: [0, 192, 3], neck: [0, 175, 2],
   left_chest: [-14, 142, 15], right_chest: [14, 142, 15],
@@ -975,7 +976,17 @@ function nearestRegion3D(point) {
 
 // The 3D body picker — replaces the 2D map on the deployed build only
 // (the chat preview can't load the uploaded .glb as a servable file).
-function Body3D({ injuriesByRegion, onPick }) {
+//
+// Each injury gets its own marker at the exact 3D point it was tapped at
+// (not a shared per-region dot), so two injuries in the same broad area
+// show as two separate, distinct marks. Tapping directly on an existing
+// marker offers to add to that specific injury or start a separate one;
+// tapping anywhere else — even nearby, even in the "same" region — always
+// starts a brand new point.
+//
+// onPick(regionId, point, hitInjuryId) — hitInjuryId is set only when the
+// tap landed on an existing marker.
+function Body3D({ injuries, onPick }) {
   const containerRef = useRef(null);
   const [status, setStatus] = useState("loading");
   const sceneRef = useRef({});
@@ -1019,6 +1030,7 @@ function Body3D({ injuriesByRegion, onPick }) {
 
     let modelRoot = null;
     const raycaster = new THREE.Raycaster();
+    raycaster.params.Points = { threshold: 6 };
     const pointer = new THREE.Vector2();
 
     new THREE.GLTFLoader().load(
@@ -1063,10 +1075,18 @@ function Body3D({ injuriesByRegion, onPick }) {
       pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
       pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
       raycaster.setFromCamera(pointer, camera);
+
+      // Check existing marker balls first — hitting one means "add to
+      // this specific injury or start separate", never a generic region.
+      let hitInjuryId = null;
+      const markerHits = raycaster.intersectObjects(markerGroup.children, false);
+      if (markerHits.length) hitInjuryId = markerHits[0].object.userData.injuryId;
+
       const hits = raycaster.intersectObject(modelRoot, true);
       if (hits.length) {
-        const regionId = nearestRegion3D(hits[0].point);
-        if (regionId) onPick(regionId);
+        const point = hits[0].point.clone();
+        const regionId = nearestRegion3D(point);
+        if (regionId) onPick(regionId, [point.x, point.y, point.z], hitInjuryId);
       }
     };
     const dom = renderer.domElement;
@@ -1103,23 +1123,25 @@ function Body3D({ injuriesByRegion, onPick }) {
     };
   }, []);
 
+  // One marker per injury, at its own exact tapped point — not a shared
+  // per-region dot. Injuries logged before this point existed (or from
+  // the 2D map) have no stored point and simply don't get a 3D marker.
   useEffect(() => {
     const { markerGroup, THREE } = sceneRef.current;
     if (!markerGroup || !THREE) return;
     while (markerGroup.children.length) markerGroup.remove(markerGroup.children[0]);
-    Object.keys(injuriesByRegion).forEach((regionId) => {
-      const pos = LANDMARKS_3D[regionId];
-      if (!pos) return;
-      const injury = injuriesByRegion[regionId];
+    injuries.forEach((injury) => {
+      if (injury.status === "resolved" || !injury.point) return;
       const color = new THREE.Color(STATUS_META[injury.status].color);
       const sphere = new THREE.Mesh(
         new THREE.SphereGeometry(4, 16, 16),
         new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.3 })
       );
-      sphere.position.set(pos[0], pos[1], pos[2] + 2);
+      sphere.position.set(injury.point[0], injury.point[1], injury.point[2]);
+      sphere.userData.injuryId = injury.id;
       markerGroup.add(sphere);
     });
-  }, [injuriesByRegion]);
+  }, [injuries]);
 
   return (
     <div>
@@ -1155,6 +1177,8 @@ function InjuryLogger() {
   const [ready, setReady] = useState(false);
   const [pickedRegion, setPickedRegion] = useState(null);
   const [openInjuryId, setOpenInjuryId] = useState(null);
+  const [tapPoint, setTapPoint] = useState(null);
+  const [forcedInjuryId, setForcedInjuryId] = useState(null);
 
   useEffect(() => {
     (async () => {
@@ -1170,10 +1194,10 @@ function InjuryLogger() {
     setDoneState(next); saveDone(next);
   };
 
-  const createInjury = ({ regionId, cause, pain, date, notes }) => {
+  const createInjury = ({ regionId, cause, pain, date, notes, point }) => {
     const inj = {
       id: uid(), regionId, cause, status: "active", createdAt: date,
-      doctorDiagnosis: null, rehabPlan: null,
+      doctorDiagnosis: null, rehabPlan: null, point: point || null,
       instances: [{ id: uid(), date, pain, notes }],
     };
     persistInjuries([inj, ...injuries]);
@@ -1208,11 +1232,18 @@ function InjuryLogger() {
       <div style={{ maxWidth: 430, margin: "0 auto", padding: "20px 18px 90px", position: "relative" }}>
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 18 }}>
           <span style={{ fontSize: 19, fontWeight: 800, color: "#1B2B29", letterSpacing: -0.3 }}>Injury Logger</span>
-          <span style={{ fontSize: 12, color: "#8A9C98" }}>{injuries.length} tracked</span>
+          <span style={{ fontSize: 12, color: "#8A9C98" }}>{APP_VERSION} · {injuries.length} tracked</span>
         </div>
 
         {tab === "map" && (
-          <Body3D injuriesByRegion={injuriesByRegion} onPick={setPickedRegion} />
+          <Body3D
+            injuries={injuries}
+            onPick={(regionId, point, hitInjuryId) => {
+              setPickedRegion(regionId);
+              setTapPoint(point);
+              setForcedInjuryId(hitInjuryId || null);
+            }}
+          />
         )}
 
         {tab === "injuries" && <InjuriesTab injuries={injuries} onOpen={setOpenInjuryId} />}
@@ -1241,9 +1272,9 @@ function InjuryLogger() {
       {pickedRegion && (
         <RegionPanel
           regionId={pickedRegion}
-          existing={injuries.filter((i) => i.regionId === pickedRegion && i.status !== "resolved")}
-          onClose={() => setPickedRegion(null)}
-          onCreateNew={createInjury}
+          existing={forcedInjuryId ? injuries.filter((i) => i.id === forcedInjuryId) : []}
+          onClose={() => { setPickedRegion(null); setTapPoint(null); setForcedInjuryId(null); }}
+          onCreateNew={(payload) => createInjury({ ...payload, point: tapPoint })}
           onAddInstance={addInstance}
         />
       )}
