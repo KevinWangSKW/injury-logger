@@ -151,7 +151,7 @@ const STATUS_META = {
 const PAIN_COLOR = (p) => (p <= 3 ? "#5F8F6E" : p <= 6 ? "#C98A2E" : "#B5432E");
 
 const uid = () => Math.random().toString(36).slice(2, 10);
-const APP_VERSION = "v9";
+const APP_VERSION = "v11";
 const todayStr = () => new Date().toISOString().slice(0, 10);
 const fmtDate = (d) =>
   new Date(d + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
@@ -1019,10 +1019,21 @@ function Body3D({ injuries, onPick }) {
 
     const controls = new THREE.OrbitControls(camera, renderer.domElement);
     controls.target.set(0, 100, 0);
-    controls.enablePan = false;
+    controls.enablePan = true;
+    controls.mouseButtons = {
+      LEFT: THREE.MOUSE.ROTATE,
+      MIDDLE: THREE.MOUSE.DOLLY,
+      RIGHT: THREE.MOUSE.PAN,
+    };
+    controls.touches = {
+      ONE: THREE.TOUCH.ROTATE,
+      TWO: THREE.TOUCH.DOLLY_PAN,
+    };
     controls.minDistance = 150;
     controls.maxDistance = 480;
     controls.update();
+    // Right-click is now "pan", not the browser's context menu.
+    renderer.domElement.addEventListener("contextmenu", (e) => e.preventDefault());
 
     const markerGroup = new THREE.Group();
     scene.add(markerGroup);
@@ -1154,7 +1165,7 @@ function Body3D({ injuries, onPick }) {
       )}
       {status === "ready" && (
         <div style={{ textAlign: "center", fontSize: 12, color: "#8A9C98", marginTop: 10 }}>
-          Drag to rotate · tap a spot to log or review an issue there
+          Left-drag to rotate · right-drag to pan · tap a spot to log or review an issue there
         </div>
       )}
       <div style={{ textAlign: "center", fontSize: 10.5, color: "#B0BDB9", marginTop: 6 }}>
